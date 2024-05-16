@@ -1,0 +1,82 @@
+name: Pylint
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+    - '.github/workflows/*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pylint
+
+      - name: Fetch master branch
+        run: git fetch origin master:refs/remotes/origin/master
+      
+      - name: Show git status and branch
+        run: |
+          git status
+          git branch -avv
+
+      - name: Identify changed files
+        run: |
+          git fetch origin ${{ github.ref }}:refs/remotes/origin/${{ github.ref }}
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '\.py' || true)
+          echo "Changed Python files: $CHANGED_FILES"
+          echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
+          echo "$CHANGED_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Lint changed files (if any)
+        run: |
+          pylint_score=5
+          fail=false
+          echo "Changed Python files: $CHANGED_FILES"
+          for file in $CHANGED_FILES; do
+            filename=$(basename "$file")
+            echo "Checking file: $filename"
+            pylint_output=$(pylint "$file" --disable=C0301,C0304,C0114,E0401,C0103,C0116,W0012,R0801)
+            echo "$pylint_output"
+            score=$(echo "$pylint_output" | grep 'rated at' | awk '{print $7}' | sed 's/\/10//g' || echo "No score found")
+            report_name="${filename%.py}-report.json"
+            echo "report_name=$report_name" >> $GITHUB_ENV
+            echo "{\"score\": $score, \"filename\": $filename, \"status\": 'success'}" > "$report_name"
+            echo "Pylint score for $filename: $score/10"
+            if [ -z "$score" ] || [ "$score" == "No score found" ]; then
+              echo "No score could be parsed for $file."
+              continue
+            fi
+            if (( $(echo "$score < $pylint_score" | bc) )); then
+              echo "Pylint score for $filename is less than $pylint_score."
+              fail=true
+            fi
+          done
+          
+          if [ "$fail" = true ]; then
+            echo "Pylint check failed."
+            exit 1
+          else
+            echo "Pylint check passed."
+          fi
+
+      - name: Upload pylint report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.report_name }}
+          path: ${{ env.report_name }}
